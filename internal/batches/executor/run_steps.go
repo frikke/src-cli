@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,6 +39,8 @@ type RunStepsOpts struct {
 	Task *Task
 	// TempDir points to where temporary files of the execution should live at.
 	TempDir string
+	// WorkingDirectory points to where the workspace files should live at.
+	WorkingDirectory string
 	// Timeout sets the deadline for the execution context. When exceeded,
 	// execution will stop and an error is returned.
 	Timeout time.Duration
@@ -45,12 +48,14 @@ type RunStepsOpts struct {
 	RepoArchive repozip.Archive
 	Logger      log.TaskLogger
 	UI          StepsExecutionUI
-	// IsRemote toggles server-side execution mode. This disables file mounts using
-	// step.mounts.
-	IsRemote bool
 	// GlobalEnv is the os.Environ() for the execution. We don't read from os.Environ()
 	// directly to allow injecting variables and hiding others.
 	GlobalEnv []string
+	// ForceRoot forces Docker containers to be run as root:root, rather than
+	// whatever the image's default user and group are.
+	ForceRoot bool
+
+	BinaryDiffs bool
 }
 
 func RunSteps(ctx context.Context, opts *RunStepsOpts) (stepResults []execution.AfterStepResult, err error) {
@@ -117,8 +122,8 @@ func RunSteps(ctx context.Context, opts *RunStepsOpts) (stepResults []execution.
 
 		// If the previous steps made any modifications to the workspace yet,
 		// apply them.
-		if opts.Task.CachedStepResult.Diff != "" {
-			if err := ws.ApplyDiff(ctx, []byte(opts.Task.CachedStepResult.Diff)); err != nil {
+		if len(opts.Task.CachedStepResult.Diff) > 0 {
+			if err := ws.ApplyDiff(ctx, opts.Task.CachedStepResult.Diff); err != nil {
 				return nil, errors.Wrap(err, "applying diff of cache result")
 			}
 		}
@@ -136,8 +141,12 @@ func RunSteps(ctx context.Context, opts *RunStepsOpts) (stepResults []execution.
 
 		stepContext := template.StepContext{
 			BatchChange: *opts.Task.BatchChangeAttributes,
-			Repository:  util.NewTemplatingRepo(opts.Task.Repository.Name, opts.Task.Repository.FileMatches),
-			Outputs:     lastOutputs,
+			Repository: util.NewTemplatingRepo(
+				opts.Task.Repository.Name,
+				opts.Task.Repository.Branch.Name,
+				opts.Task.Repository.FileMatches,
+			),
+			Outputs: lastOutputs,
 			Steps: template.StepsContext{
 				Path:    opts.Task.Path,
 				Changes: previousStepResult.ChangedFiles,
@@ -192,12 +201,17 @@ func RunSteps(ctx context.Context, opts *RunStepsOpts) (stepResults []execution.
 			return stepResults, errors.Wrap(err, "getting changed files in step")
 		}
 
+		version := 1
+		if opts.BinaryDiffs {
+			version = 2
+		}
 		stepResult := execution.AfterStepResult{
+			Version:      version,
 			ChangedFiles: changes,
 			Stdout:       stdoutBuffer.String(),
 			Stderr:       stderrBuffer.String(),
 			StepIndex:    i,
-			Diff:         string(stepDiff),
+			Diff:         stepDiff,
 			// Those will be set below.
 			Outputs: make(map[string]interface{}),
 		}
@@ -317,16 +331,21 @@ func executeSingleStep(
 		"--mount", fmt.Sprintf("type=bind,source=%s,target=%s,ro", runScriptFile, containerTemp),
 	}, workspaceOpts...)
 
+	if opts.ForceRoot {
+		args = append(args, "--user", "0:0")
+	}
+
 	for target, source := range filesToMount {
 		args = append(args, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,ro", source.Name(), target))
 	}
 
-	// Temporarily add a guard to prevent a path to mount path for server-side processing.
-	if !opts.IsRemote {
-		// Mount any paths on the local system to the docker container. The paths have already been validated during parsing.
-		for _, mount := range step.Mount {
-			args = append(args, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,ro", mount.Path, mount.Mountpoint))
+	// Mount any paths on the local system to the docker container. The paths have already been validated during parsing.
+	for _, mount := range step.Mount {
+		workspaceFilePath, err := getAbsoluteMountPath(opts.WorkingDirectory, mount.Path)
+		if err != nil {
+			return bytes.Buffer{}, bytes.Buffer{}, err
 		}
+		args = append(args, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,ro", workspaceFilePath, mount.Mountpoint))
 	}
 
 	for k, v := range env {
@@ -589,6 +608,29 @@ func createCidFile(ctx context.Context, tempDir string, repoSlug string) (string
 	}
 
 	return cidFile.Name(), cleanup, nil
+}
+
+func getAbsoluteMountPath(batchSpecDir string, mountPath string) (string, error) {
+	p := mountPath
+	if !filepath.IsAbs(p) {
+		// Try to build the absolute path since Docker will only mount absolute paths
+		p = filepath.Join(batchSpecDir, p)
+	}
+	pathInfo, err := os.Stat(p)
+	if os.IsNotExist(err) {
+		return "", errors.Newf("mount path %s does not exist", p)
+	} else if err != nil {
+		return "", errors.Wrap(err, "mount path validation")
+	}
+	if !strings.HasPrefix(p, batchSpecDir) {
+		return "", errors.Newf("mount path %s is not in the same directory or subdirectory as the batch spec", mountPath)
+	}
+	// Mounting a directory on Docker must end with the separator. So, append the file separator to make
+	// users' lives easier.
+	if pathInfo.IsDir() && !strings.HasSuffix(p, string(filepath.Separator)) {
+		p += string(filepath.Separator)
+	}
+	return p, nil
 }
 
 type stepFailedErr struct {

@@ -26,10 +26,16 @@ curl -L https://sourcegraph.com/.api/src-cli/src_darwin_amd64 -o /usr/local/bin/
 chmod +x /usr/local/bin/src
 ```
 
-or
+or with Homebrew:
 
 ```bash
 brew install sourcegraph/src-cli/src-cli
+```
+
+or with npm:
+
+```bash
+npm install -g @sourcegraph/src
 ```
 
 #### Version compatible with your Sourcegraph instance
@@ -41,6 +47,20 @@ curl -L https://sourcegraph.example.com/.api/src-cli/src_darwin_amd64 -o /usr/lo
 chmod +x /usr/local/bin/src
 ```
 
+or, if you know the specific version to target, for example 3.43.2:
+
+```bash
+brew install sourcegraph/src-cli/src-cli@3.43.2
+```
+
+or with npm/npx:
+
+```bash
+npx @sourcegraph/src@3.43.2 version
+```
+
+> Note: Versioned formulas are available on Homebrew for Sourcegraph versions 3.43.2 and later.
+
 ### Installation: Linux
 
 #### Latest version
@@ -50,6 +70,12 @@ curl -L https://sourcegraph.com/.api/src-cli/src_linux_amd64 -o /usr/local/bin/s
 chmod +x /usr/local/bin/src
 ```
 
+or with npm:
+
+```bash
+npm install -g @sourcegraph/src
+```
+
 #### Version compatible with your Sourcegraph instance
 
 Replace `sourcegraph.example.com` with your Sourcegraph instance URL:
@@ -57,6 +83,12 @@ Replace `sourcegraph.example.com` with your Sourcegraph instance URL:
 ```bash
 curl -L https://sourcegraph.example.com/.api/src-cli/src_linux_amd64 -o /usr/local/bin/src
 chmod +x /usr/local/bin/src
+```
+
+or, with npm/npx, if you know the specific version to target, for example 3.43.2:
+
+```bash
+npx @sourcegraph/src@3.43.2 version
 ```
 
 ### Installation: Windows
@@ -88,7 +120,11 @@ Run <code><strong>src login <i>SOURCEGRAPH-URL</i></strong></code> to authentica
 - `SRC_ENDPOINT`: the URL to your Sourcegraph instance (such as `https://sourcegraph.example.com`)
 - `SRC_ACCESS_TOKEN`: your Sourcegraph access token (on your Sourcegraph instance, click your user menu in the top right, then select **Settings > Access tokens** to create one)
 
-For convenience, you can export these environment variables in your shell profile. To configure them as environment variables, add the following to your terminal profile file, typically accessible at `~/.bash_profile` (if using Bash) or `~/.zprofile` (if using Zsh):
+For convenience, you can add these environment variables persistently. 
+
+### Configuration: Mac OS / Linux
+
+Add the following to your terminal profile file, typically accessible at `~/.bash_profile` (if using Bash) or `~/.zprofile` (if using Zsh):
 
 ```
 export SRC_ACCESS_TOKEN=my-token
@@ -102,6 +138,19 @@ You can also inline them in a single command with:
 ```sh
 SRC_ENDPOINT=https://sourcegraph.example.com SRC_ACCESS_TOKEN=my-token src search 'foo'
 ```
+
+### Configuration: Windows
+
+Type the following on your PowerShell terminal:
+
+```
+$env:SRC_ENDPOINT = 'https://sourcegraph.example.com'
+$env:SRC_ACCESS_TOKEN = 'my-token'
+```
+
+Replace `my-token` and `https://sourcegraph.example.com` with the appropriate values for your account and instance.
+
+You can also manually add them via the *System Properties* windows. Check [this post](https://www.computerhope.com/issues/ch000549.htm) for details.
 
 Is your Sourcegraph instance behind a custom auth proxy? See [auth proxy configuration](./AUTH_PROXY.md) docs.
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	cliLog "log"
 	"strings"
 	"time"
 
@@ -52,8 +53,17 @@ Examples:
 			Client: cfg.apiClient(flags.api, flagSet.Output()),
 		})
 
-		if err := validateSourcegraphVersionConstraint(ctx, svc); err != nil {
+		_, ffs, err := svc.DetermineLicenseAndFeatureFlags(ctx, flags.skipErrors)
+		if err != nil {
 			return err
+		}
+
+		if err := validateSourcegraphVersionConstraint(ffs); err != nil {
+			if !flags.skipErrors {
+				return err
+			} else {
+				cliLog.Printf("WARNING: %s", err)
+			}
 		}
 
 		out := output.NewOutput(flagSet.Output(), output.OutputOpts{Verbose: *verbose})
@@ -63,7 +73,7 @@ Examples:
 		// may as well validate it at the same time so we don't even have to go to
 		// the backend if it's invalid.
 		ui.ParsingBatchSpec()
-		spec, raw, err := parseBatchSpec(ctx, file, svc, true)
+		spec, batchSpecDir, raw, err := parseBatchSpec(ctx, file, svc)
 		if err != nil {
 			ui.ParsingBatchSpecFailure(err)
 			return err
@@ -100,12 +110,28 @@ Examples:
 		}
 		ui.SendingBatchSpecSuccess()
 
+		hasWorkspaceFiles := false
+		for _, step := range spec.Steps {
+			if len(step.Mount) > 0 {
+				hasWorkspaceFiles = true
+				break
+			}
+		}
+		if hasWorkspaceFiles {
+			ui.UploadingWorkspaceFiles()
+			if err = svc.UploadBatchSpecWorkspaceFiles(ctx, batchSpecDir, batchSpecID, spec.Steps); err != nil {
+				return err
+			}
+			ui.UploadingWorkspaceFilesSuccess()
+		}
+
 		// Wait for the workspaces to be resolved.
 		ui.ResolvingWorkspaces()
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
+		var res *service.BatchSpecWorkspaceResolution
 		for range ticker.C {
-			res, err := svc.GetBatchSpecWorkspaceResolution(ctx, batchSpecID)
+			res, err = svc.GetBatchSpecWorkspaceResolution(ctx, batchSpecID)
 			if err != nil {
 				return err
 			}
@@ -116,7 +142,7 @@ Examples:
 				break
 			}
 		}
-		ui.ResolvingWorkspacesSuccess()
+		ui.ResolvingWorkspacesSuccess(res.Workspaces.TotalCount)
 
 		// We have to enqueue this for execution with a separate operation.
 		//

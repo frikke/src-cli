@@ -43,10 +43,11 @@ func New(opts *Opts) *Service {
 // The reason we ask for batchChanges here is to surface errors about trying to use batch
 // changes in an unsupported environment sooner, since the version check is typically the
 // first thing we do.
-const sourcegraphVersionQuery = `query SourcegraphVersion {
+const getInstanceInfo = `query InstanceInfo {
 	site {
 		productVersion
 	}
+	maxUnlicensedChangesets
 	batchChanges(first: 1) {
 		nodes {
 			id
@@ -55,32 +56,39 @@ const sourcegraphVersionQuery = `query SourcegraphVersion {
 }
 `
 
-// getSourcegraphVersion queries the Sourcegraph GraphQL API to get the
-// current version of the Sourcegraph instance.
-func (svc *Service) getSourcegraphVersion(ctx context.Context) (string, error) {
+// getSourcegraphVersionAndMaxChangesetsCount queries the Sourcegraph GraphQL API to get the
+// current version and max unlicensed changesets count for the Sourcegraph instance.
+func (svc *Service) getSourcegraphVersionAndMaxChangesetsCount(ctx context.Context) (string, int, error) {
 	var result struct {
-		Site struct {
+		MaxUnlicensedChangesets int
+		Site                    struct {
 			ProductVersion string
 		}
 	}
 
-	ok, err := svc.client.NewQuery(sourcegraphVersionQuery).Do(ctx, &result)
+	ok, err := svc.client.NewQuery(getInstanceInfo).Do(ctx, &result)
 	if err != nil || !ok {
-		return "", err
+		return "", 0, err
 	}
 
-	return result.Site.ProductVersion, err
+	return result.Site.ProductVersion, result.MaxUnlicensedChangesets, err
 }
 
-// DetermineFeatureFlags fetches the version of the configured Sourcegraph and
-// returns the enabled features.
-func (svc *Service) DetermineFeatureFlags(ctx context.Context) (*batches.FeatureFlags, error) {
-	version, err := svc.getSourcegraphVersion(ctx)
+// DetermineLicenseAndFeatureFlags returns the enabled features and license restrictions
+// configured for the Sourcegraph instance.
+func (svc *Service) DetermineLicenseAndFeatureFlags(ctx context.Context, skipErrors bool) (*batches.LicenseRestrictions, *batches.FeatureFlags, error) {
+	version, mc, err := svc.getSourcegraphVersionAndMaxChangesetsCount(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to query Sourcegraph version to check for available features")
+		return nil, nil, errors.Wrap(err, "failed to query Sourcegraph version and license info for instance")
 	}
+
+	lr := &batches.LicenseRestrictions{
+		MaxUnlicensedChangesets: mc,
+	}
+
 	ffs := &batches.FeatureFlags{}
-	return ffs, ffs.SetFromVersion(version)
+	return lr, ffs, ffs.SetFromVersion(version, skipErrors)
+
 }
 
 const applyBatchChangeMutation = `
@@ -466,52 +474,40 @@ func (e *duplicateBranchesErr) Error() string {
 	return out.String()
 }
 
-func (svc *Service) ParseBatchSpec(dir string, data []byte, isRemote bool) (*batcheslib.BatchSpec, error) {
+func (svc *Service) ParseBatchSpec(dir string, data []byte) (*batcheslib.BatchSpec, error) {
 	spec, err := batcheslib.ParseBatchSpec(data)
 	if err != nil {
 		return nil, errors.Wrap(err, "parsing batch spec")
 	}
-	if err = validateMount(dir, spec, isRemote); err != nil {
+	if err = validateMount(dir, spec); err != nil {
 		return nil, errors.Wrap(err, "handling mount")
 	}
 	return spec, nil
 }
 
-func validateMount(batchSpecDir string, spec *batcheslib.BatchSpec, isRemote bool) error {
+func validateMount(batchSpecDir string, spec *batcheslib.BatchSpec) error {
 	for i, step := range spec.Steps {
-		for j, mount := range step.Mount {
-			if isRemote {
-				return errors.New("mounts are not supported for server-side processing")
-			}
-			p := mount.Path
-			if !filepath.IsAbs(p) {
+		for _, mount := range step.Mount {
+			if !filepath.IsAbs(mount.Path) {
 				// Try to build the absolute path since Docker will only mount absolute paths
-				p = filepath.Join(batchSpecDir, p)
+				mount.Path = filepath.Join(batchSpecDir, mount.Path)
 			}
-			pathInfo, err := os.Stat(p)
+			_, err := os.Stat(mount.Path)
 			if os.IsNotExist(err) {
-				return errors.Newf("step %d mount path %s does not exist", i+1, p)
+				return errors.Newf("step %d mount path %s does not exist", i+1, mount.Path)
 			} else if err != nil {
 				return errors.Wrapf(err, "step %d mount path validation", i+1)
 			}
-			if !strings.HasPrefix(p, batchSpecDir) {
+			if !strings.HasPrefix(mount.Path, batchSpecDir) {
 				return errors.Newf("step %d mount path is not in the same directory or subdirectory as the batch spec", i+1)
 			}
-			// Mounting a directory on Docker must end with the separator. So, append the file separator to make
-			// users' lives easier.
-			if pathInfo.IsDir() && !strings.HasSuffix(p, string(filepath.Separator)) {
-				p += string(filepath.Separator)
-			}
-			// Update the mount path to the absolute path so building the absolute path (above) does not need to be
-			// redone when adding the mount argument to the Docker container.
-			// TODO: Can this mess with caching? We wouldn't be doing that server-side.
-			step.Mount[j].Path = p
 		}
 	}
 	return nil
 }
 
-const exampleSpecTmpl = `name: NAME-OF-YOUR-BATCH-CHANGE
+const exampleSpecTmpl = `version: 2 # Use the latest schema version
+name: NAME-OF-YOUR-BATCH-CHANGE
 description: DESCRIPTION-OF-YOUR-BATCH-CHANGE
 
 # "on" specifies on which repositories to execute the "steps".

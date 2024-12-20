@@ -234,7 +234,6 @@ func TestService_ParseBatchSpec(t *testing.T) {
 		name         string
 		batchSpecDir string
 		rawSpec      string
-		isRemote     bool
 		expectedSpec *batcheslib.BatchSpec
 		expectedErr  error
 	}{
@@ -254,6 +253,25 @@ description: A test spec
 some-new-field: Foo bar
 `,
 			expectedErr: errors.New("parsing batch spec: Additional property some-new-field is not allowed"),
+		},
+		{
+			name: "supported version",
+			rawSpec: `
+version: 2
+name: test-spec
+description: A test spec
+`,
+
+			expectedSpec: &batcheslib.BatchSpec{Version: 2, Name: "test-spec", Description: "A test spec"},
+		},
+		{
+			name: "unsupported version",
+			rawSpec: `
+version: 99
+name: test-spec
+description: A test spec
+`,
+			expectedErr: errors.New("parsing batch spec: version: version must be one of the following: 1, 2"),
 		},
 		{
 			name:         "mount absolute file",
@@ -327,7 +345,7 @@ changesetTemplate:
 						Container: "alpine:3",
 						Mount: []batcheslib.Mount{
 							{
-								Path:       filepath.Join(tempDir, "sample.sh"),
+								Path:       "./sample.sh",
 								Mountpoint: "/tmp/sample.sh",
 							},
 						},
@@ -371,7 +389,7 @@ changesetTemplate:
 						Container: "alpine:3",
 						Mount: []batcheslib.Mount{
 							{
-								Path:       tempDir + string(filepath.Separator),
+								Path:       tempDir,
 								Mountpoint: "/tmp",
 							},
 						},
@@ -415,7 +433,7 @@ changesetTemplate:
 						Container: "alpine:3",
 						Mount: []batcheslib.Mount{
 							{
-								Path:       tempDir + string(filepath.Separator),
+								Path:       "./",
 								Mountpoint: "/tmp",
 							},
 						},
@@ -461,11 +479,11 @@ changesetTemplate:
 						Container: "alpine:3",
 						Mount: []batcheslib.Mount{
 							{
-								Path:       filepath.Join(tempDir, "sample.sh"),
+								Path:       "./sample.sh",
 								Mountpoint: "/tmp/sample.sh",
 							},
 							{
-								Path:       filepath.Join(tempDir, "another.sh"),
+								Path:       "./another.sh",
 								Mountpoint: "/tmp/another.sh",
 							},
 						},
@@ -523,32 +541,10 @@ changesetTemplate:
 `, tempOutsideDir),
 			expectedErr: errors.New("handling mount: step 1 mount path is not in the same directory or subdirectory as the batch spec"),
 		},
-		{
-			name:         "mount remote processing",
-			batchSpecDir: tempDir,
-			rawSpec: `
-name: test-spec
-description: A test spec
-steps:
-  - run: /tmp/foo/bar/sample.sh
-    container: alpine:3
-    mount:
-      - path: /valid/sample.sh
-        mountpoint: /tmp/foo/bar/sample.sh
-changesetTemplate:
-  title: Test Mount
-  body: Test a mounted path
-  branch: test
-  commit:
-    message: Test
-`,
-			isRemote:    true,
-			expectedErr: errors.New("handling mount: mounts are not supported for server-side processing"),
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			spec, err := svc.ParseBatchSpec(test.batchSpecDir, []byte(test.rawSpec), test.isRemote)
+			spec, err := svc.ParseBatchSpec(test.batchSpecDir, []byte(test.rawSpec))
 			if test.expectedErr != nil {
 				assert.Equal(t, test.expectedErr.Error(), err.Error())
 			} else {
